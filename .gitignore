@@ -74,3 +74,9 @@ id_ed25519*
 *.dmg
 *.pkg
 *.AppImage
+
+# Earlier RetroArch experiments and internal design notes stay local.
+/standalone-media/DESIGN-REVIEW-*.md
+/tools/inspect_display_calls.py
+/tools/patch_retroarch_ios9.py
+/tools/retroarch_usb.py
