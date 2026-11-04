@@ -1,0 +1,69 @@
+#import "../RWFeedStore.h"
+#import "../RWFeedStorageBudget.h"
+static BOOL Wait(BOOL(^done)(void)){NSDate *limit=[NSDate dateWithTimeIntervalSinceNow:8];while(!done()&&limit.timeIntervalSinceNow>0)[NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.005]];return done();}
+int main(){@autoreleasepool{__block int checks=0,failures=0;
+#define CHECK(...) do{checks++;if(!(__VA_ARGS__)){failures++;fprintf(stderr,"FAIL line %d\n",__LINE__);}}while(0)
+    NSString *folder=[NSTemporaryDirectory()stringByAppendingPathComponent:NSUUID.UUID.UUIDString];RWFeedStore *feed=[[RWFeedStore alloc]initWithFolder:folder context:@"main:movies:popular"];
+    @try {
+        NSMutableArray *batch=[NSMutableArray new];for(int i=0;i<2000;i++)[batch addObject:@{@"id":[NSString stringWithFormat:@"tt%07d",i],@"type":@"movie",@"name":[NSString stringWithFormat:@"Film %d",i],@"genres":@[@"Family"],@"poster":@"https://example.test/poster.jpg",@"videos":@[@{@"large":@"Episodes should not enter a card cache"}]}];
+        __block BOOL done=NO;[feed append:batch done:^(NSUInteger added,NSString *error){CHECK(!error&&added==2000);CHECK(NSThread.isMainThread);done=YES;}];CHECK(Wait(^BOOL{return done;}));CHECK(feed.count==2000);CHECK(![feed.diagnostics[@"memory_records"]unsignedIntegerValue]);CHECK([feed.diagnostics[@"disk_bytes"]unsignedLongLongValue]<=RWFeedDiskBudgetBytes);
+        done=NO;[feed loadRange:NSMakeRange(0,120) done:^(NSString *error){CHECK(!error);done=YES;}];CHECK(Wait(^BOOL{return done;}));CHECK([[feed cachedItem:0][@"name"]isEqual:@"Film 0"]);CHECK(![feed cachedItem:0][@"videos"]);
+        done=NO;[feed loadRange:NSMakeRange(1800,160) done:^(NSString *error){CHECK(!error);done=YES;}];CHECK(Wait(^BOOL{return done;}));CHECK([feed.diagnostics[@"memory_records"]unsignedIntegerValue]<=200);CHECK([[feed cachedItem:1900][@"name"]isEqual:@"Film 1900"]);CHECK(![feed cachedItem:1]);
+        done=NO;[feed loadRange:NSMakeRange(1,30) done:^(NSString *error){CHECK(!error);done=YES;}];CHECK(Wait(^BOOL{return done;}));CHECK([[feed cachedItem:1][@"name"]isEqual:@"Film 1"]); // Return to an evicted page without a network request.
+        done=NO;[feed append:@[@{@"id":@"tt0000000",@"name":@"Updated title",@"type":@"movie"},@{@"id":@"tt9999999",@"name":@"New title",@"type":@"movie"}] done:^(NSUInteger added,NSString *error){CHECK(!error&&added==1);done=YES;}];CHECK(Wait(^BOOL{return done;}));CHECK(feed.count==2001);
+        done=NO;[feed loadRange:NSMakeRange(0,1) done:^(NSString *error){CHECK(!error);done=YES;}];CHECK(Wait(^BOOL{return done;}));CHECK([[feed cachedItem:0][@"name"]isEqual:@"Updated title"]);
+        done=NO;[feed loadRange:NSMakeRange(2000,50) done:^(NSString *error){CHECK(!error);done=YES;}];CHECK(Wait(^BOOL{return done;}));CHECK([[feed cachedItem:2000][@"id"]isEqual:@"tt9999999"]);
+        [feed discardMemory];CHECK(![feed cachedItem:2000]);CHECK(feed.count==2001);
+        done=NO;[feed append:@[NSNull.null,@{@"id":@"bad",@"type":@"person",@"name":@"Not a title"},@{@"id":@"number-name",@"type":@"movie",@"name":@42}] done:^(NSUInteger added,NSString *error){CHECK(!error&&added==0);done=YES;}];CHECK(Wait(^BOOL{return done;}));CHECK(feed.count==2001);
+        NSString *large=[@"x" stringByPaddingToLength:2048 withString:@"x" startingAtIndex:0];
+        done=NO;[feed append:@[@{@"id":@"ttrollback",@"type":@"movie",@"name":@"Must roll back"},@{@"id":@"ttoversize",@"type":@"movie",@"name":large,@"poster":large,@"background":large,@"releaseInfo":large}] done:^(NSUInteger added,NSString *error){CHECK(error.length&&added==0);done=YES;}];CHECK(Wait(^BOOL{return done;}));CHECK(feed.count==2001);
+        done=NO;[feed loadRange:NSMakeRange(2000,2) done:^(NSString *error){CHECK(!error);done=YES;}];CHECK(Wait(^BOOL{return done;}));CHECK(![feed cachedItem:2001]);
+        RWFeedStore *second=[[RWFeedStore alloc]initWithFolder:folder context:@"second-session"];NSMutableArray *heavy=[NSMutableArray new];NSString *longName=[@"a" stringByPaddingToLength:1024 withString:@"a" startingAtIndex:0];
+        for(int i=0;i<1600;i++)[heavy addObject:@{@"id":[NSString stringWithFormat:@"ttheavy%d",i],@"type":@"movie",@"name":longName}];
+        done=NO;[second append:heavy done:^(NSUInteger added,NSString *error){CHECK(!error&&added==1600);done=YES;}];CHECK(Wait(^BOOL{return done;}));
+        done=NO;[feed append:heavy done:^(NSUInteger added,NSString *error){CHECK(error.length&&added==0);done=YES;}];CHECK(Wait(^BOOL{return done;}));CHECK(feed.count==2001&&second.count==1600);
+        unsigned long long total=0;for(NSString *name in [NSFileManager.defaultManager contentsOfDirectoryAtPath:folder error:nil])total+=[[NSFileManager.defaultManager attributesOfItemAtPath:[folder stringByAppendingPathComponent:name] error:nil][NSFileSize]unsignedLongLongValue];CHECK(total<=RWFeedStorageReserveBytes);
+        done=NO;[second close:^{done=YES;}];CHECK(Wait(^BOOL{return done;}));
+        __block BOOL stale=NO,closed=NO;[feed loadRange:NSMakeRange(0,120) done:^(NSString *error){CHECK(error.length>0);stale=YES;}];[feed close:^{closed=YES;}];CHECK(Wait(^BOOL{return stale&&closed;}));CHECK(![[NSFileManager defaultManager]contentsOfDirectoryAtPath:folder error:nil].count);
+        done=NO;[feed append:batch done:^(NSUInteger added,NSString *error){CHECK(error.length>0&&added==0);done=YES;}];CHECK(done);
+        RWFeedStore *sorted=[[RWFeedStore alloc]initWithFolder:folder context:@"sorted-credits"];
+        NSArray *credits=@[@{@"id":@"tt1",@"type":@"movie",@"name":@"Old film",@"releaseInfo":@"1999",@"imdbRating":@8},@{@"id":@"tt2",@"type":@"series",@"name":@"Recent show",@"releaseInfo":@"2024",@"imdbRating":@7},@{@"id":@"tt3",@"type":@"movie",@"name":@"Recent film",@"releaseInfo":@"2023",@"imdbRating":@9}];
+        done=NO;[sorted append:credits done:^(NSUInteger added,NSString *error){CHECK(!error&&added==3);done=YES;}];CHECK(Wait(^BOOL{return done;}));
+        done=NO;[sorted selectType:@"movie" sort:@"Year" done:^(NSString *error){CHECK(!error);done=YES;}];CHECK(Wait(^BOOL{return done;}));CHECK(sorted.count==2&&[sorted.diagnostics[@"stored_records"]integerValue]==3);
+        done=NO;[sorted loadRange:NSMakeRange(0,10) done:^(NSString *error){CHECK(!error);done=YES;}];CHECK(Wait(^BOOL{return done;}));CHECK([[sorted cachedItem:0][@"id"]isEqual:@"tt3"]);
+        done=NO;[sorted append:@[@{@"id":@"tt4",@"type":@"movie",@"name":@"Newly found film",@"releaseInfo":@"2026",@"imdbRating":@10},@{@"id":@"tt5",@"type":@"series",@"name":@"Older great show",@"releaseInfo":@"2001",@"imdbRating":@9}] done:^(NSUInteger added,NSString *error){CHECK(!error&&added==1);done=YES;}];CHECK(Wait(^BOOL{return done;}));CHECK(sorted.count==3);
+        done=NO;[sorted loadRange:NSMakeRange(0,10) done:^(NSString *error){CHECK(!error);done=YES;}];CHECK(Wait(^BOOL{return done;}));CHECK([[sorted cachedItem:0][@"id"]isEqual:@"tt3"]&&[[sorted cachedItem:2][@"id"]isEqual:@"tt4"]); // New page never jumps above the reader's current cards.
+        done=NO;[sorted selectType:@"series" sort:@"Rating" done:^(NSString *error){CHECK(!error);done=YES;}];CHECK(Wait(^BOOL{return done;}));CHECK(sorted.count==2);
+        done=NO;[sorted loadRange:NSMakeRange(0,10) done:^(NSString *error){CHECK(!error);done=YES;}];CHECK(Wait(^BOOL{return done;}));CHECK([[sorted cachedItem:0][@"id"]isEqual:@"tt5"]&&[[sorted cachedItem:1][@"id"]isEqual:@"tt2"]);
+        done=NO;[sorted selectType:nil sort:@"Year" done:^(NSString *error){CHECK(!error);done=YES;}];CHECK(Wait(^BOOL{return done;}));CHECK(sorted.count==5);
+        done=NO;[sorted loadRange:NSMakeRange(0,10) done:^(NSString *error){CHECK(!error);done=YES;}];CHECK(Wait(^BOOL{return done;}));CHECK([[sorted cachedItem:0][@"id"]isEqual:@"tt4"]); // Explicit sort rearranges all retained credits.
+        done=NO;[sorted loadRange:NSMakeRange(0,5) done:^(NSString *error){CHECK(error.length>0);done=YES;}];[sorted discardMemory];CHECK(Wait(^BOOL{return done;}));CHECK(![sorted cachedItem:0]);
+        done=NO;[sorted close:^{done=YES;}];CHECK(Wait(^BOOL{return done;}));
+        RWFeedStore *entities=[[RWFeedStore alloc]initWithFolder:folder context:@"regular:people"];
+        NSDictionary *person=@{@"id":@"Q36301",@"name":@"Anne Hathaway",@"type":@"person",@"profileID":@"regular",@"creditRole":@"cast",@"roles":@[@"cast"],@"knownFor":credits,@"image":@"https://example.test/portrait.jpg",@"imageRole":@"portrait",@"biography":@"Actor",@"creditCount":@5};
+        done=NO;[entities append:@[person,@{@"id":@"Q2",@"name":@"No eligible credits",@"type":@"person",@"profileID":@"kids"}] done:^(NSUInteger added,NSString *error){CHECK(!error&&added==1);done=YES;}];CHECK(Wait(^BOOL{return done;}));
+        done=NO;[entities loadRange:NSMakeRange(0,1) done:^(NSString *error){CHECK(!error);done=YES;}];CHECK(Wait(^BOOL{return done;}));NSDictionary *saved=[entities cachedItem:0];CHECK([saved[@"knownFor"]count]==3);CHECK([saved[@"profileID"]isEqual:@"regular"]);CHECK([saved[@"imageRole"]isEqual:@"portrait"]);CHECK([saved[@"creditCount"]integerValue]==5);CHECK([saved[@"roles"]isEqual:@[@"cast"]]);
+        done=NO;[entities close:^{done=YES;}];CHECK(Wait(^BOOL{return done;}));
+        RWFeedStore *paged=[[RWFeedStore alloc]initWithFolder:folder context:@"paged"];
+        NSMutableArray *enough=[NSMutableArray new];for(int i=0;i<4000;i++)[enough addObject:@{@"id":[NSString stringWithFormat:@"ttlarge%d",i],@"type":@"movie",@"name":longName}];
+        done=NO;__block NSUInteger pages=0;[paged appendPages:enough progress:^(NSUInteger added,NSString *error,BOOL finished){pages++;CHECK(NSThread.isMainThread);if(finished){CHECK(error.length&&paged.count>32&&paged.count<4000);done=YES;}}];CHECK(Wait(^BOOL{return done;}));CHECK(pages>2&&!paged.pagesComplete);
+        done=NO;[paged loadRange:NSMakeRange(0,1) done:^(NSString *error){CHECK(!error&&[[paged cachedItem:0][@"id"]isEqual:@"ttlarge0"]);done=YES;}];CHECK(Wait(^BOOL{return done;}));
+        unsigned long long fullBytes=[paged.diagnostics[@"disk_bytes"]unsignedLongLongValue];
+        done=NO;[paged replacePages:credits context:@"new-query" type:@"movie" progress:^(NSUInteger added,NSString *error,BOOL finished){CHECK(!error&&finished&&added==2);done=YES;}];CHECK(Wait(^BOOL{return done;}));CHECK(paged.count==2&&[paged.context isEqual:@"new-query"]&&paged.pagesComplete);CHECK([paged.diagnostics[@"disk_bytes"]unsignedLongLongValue]<fullBytes/4);CHECK([paged.diagnostics[@"auto_vacuum_mode"]integerValue]==2&&[paged.diagnostics[@"vacuum_result"]integerValue]==0);CHECK([paged.diagnostics[@"sqlite_version"]length]>0);
+        done=NO;[paged loadRange:NSMakeRange(0,2) done:^(NSString *error){CHECK(!error&&[[paged cachedItem:0][@"id"]isEqual:@"tt1"]);done=YES;}];CHECK(Wait(^BOOL{return done;}));
+        done=NO;[paged replacePages:@[@{@"id":@"bad-query",@"type":@"movie",@"name":large,@"poster":large,@"background":large,@"releaseInfo":large}] context:@"failed-query" type:nil progress:^(NSUInteger added,NSString *error,BOOL finished){CHECK(error.length&&finished&&!added);done=YES;}];CHECK(Wait(^BOOL{return done;}));CHECK(paged.count==2&&[paged.context isEqual:@"new-query"]);
+        done=NO;[paged loadRange:NSMakeRange(0,2) done:^(NSString *error){CHECK(!error&&[[paged cachedItem:0][@"id"]isEqual:@"tt1"]);done=YES;}];CHECK(Wait(^BOOL{return done;}));
+        __block NSUInteger stalePages=0;[paged appendPages:enough progress:^(NSUInteger added,NSString *error,BOOL finished){stalePages++;}];
+        done=NO;[paged replacePages:@[credits[1]] context:@"latest-query" type:@"series" progress:^(NSUInteger added,NSString *error,BOOL finished){CHECK(!error&&finished&&added==1);done=YES;}];CHECK(Wait(^BOOL{return done;}));CHECK(!stalePages&&paged.count==1&&[paged.context isEqual:@"latest-query"]&&paged.pagesComplete);
+        done=NO;[paged loadRange:NSMakeRange(0,2) done:^(NSString *error){CHECK(!error&&[[paged cachedItem:0][@"id"]isEqual:@"tt2"]&&! [paged cachedItem:1]);done=YES;}];CHECK(Wait(^BOOL{return done;}));
+        NSArray *small=[batch subarrayWithRange:NSMakeRange(0,100)];done=NO;__block NSUInteger paused=0;
+        [paged replacePages:small context:@"pause-and-resume" type:nil progress:^(NSUInteger added,NSString *error,BOOL finished){paused++;CHECK(!error&&!finished&&paged.count==32);[paged cancelPages];done=YES;}];CHECK(Wait(^BOOL{return done;}));CHECK(paused==1&&!paged.pagesComplete);
+        done=NO;[paged appendPages:small progress:^(NSUInteger added,NSString *error,BOOL finished){CHECK(!error);if(finished)done=YES;}];CHECK(Wait(^BOOL{return done;}));CHECK(paged.count==100&&paged.pagesComplete);
+        done=NO;[paged loadRange:NSMakeRange(0,100) done:^(NSString *error){CHECK(!error&&[[paged cachedItem:0][@"id"]isEqual:small[0][@"id"]]&&[[paged cachedItem:99][@"id"]isEqual:small[99][@"id"]]);done=YES;}];CHECK(Wait(^BOOL{return done;}));
+        done=NO;[paged close:^{done=YES;}];CHECK(Wait(^BOOL{return done;}));
+        RWFeedStore *cancelled=[[RWFeedStore alloc]initWithFolder:folder context:@"cancelled"];
+        done=NO;__block NSUInteger delivered=0;[cancelled appendPages:enough progress:^(NSUInteger added,NSString *error,BOOL finished){delivered++;CHECK(added==32&&!error&&!finished);[cancelled close:^{done=YES;}];}];CHECK(Wait(^BOOL{return done;}));CHECK(delivered==1&&cancelled.count==32);
+        RWFeedStore *other=[[RWFeedStore alloc]initWithFolder:folder context:@"kids:movies:popular"];CHECK(other.count==0&&![[other context]isEqual:feed.context]);done=NO;[other close:^{done=YES;}];CHECK(Wait(^BOOL{return done;}));
+    }@finally{__block BOOL closed=NO;[feed close:^{closed=YES;}];Wait(^BOOL{return closed;});[[NSFileManager defaultManager]removeItemAtPath:folder error:nil];}
+    printf("{\"checks\":%d,\"failures\":%d,\"records_exercised\":2001,\"cache_limit\":200}\n",checks,failures);return failures?1:0;
+}}

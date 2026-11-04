@@ -1,0 +1,23 @@
+name: Bug report
+description: Report a reproducible Rewind issue.
+title: "[Bug]: "
+body:
+  - type: input
+    id: environment
+    attributes:
+      label: App version, device and OS
+      placeholder: Rewind version / device model / iOS version
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps, expected result and actual result
+      description: For playback, distinguish lookup, connecting, buffering and playing. Say whether the media was cached.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized evidence
+      description: Remove account data, private tracker URLs, device IDs and viewing history. Do not upload media files or credentials.

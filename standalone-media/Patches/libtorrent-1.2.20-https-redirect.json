@@ -1,0 +1,17 @@
+{
+  "source_sha256": "58746002403e0d240dc8bf2147f876d3e9c06148911300d3fda6181ff0364501",
+  "needle": "\t\t\t\tstd::string url = resolve_redirect_location(m_url, location);\n\t\t\t\tget(url, m_completion_timeout, &m_proxy, m_redirects - 1\n\t\t\t\t\t, m_user_agent, m_bind_addr, m_resolve_flags, m_auth",
+  "replacement": "                std::string url = resolve_redirect_location(m_url, location);\n                error_code destination_error, origin_error;\n                auto const destination = parse_url_components(url, destination_error);\n                auto const origin = parse_url_components(m_url, origin_error);\n                // Keep TLS through redirects, and never carry Basic credentials\n                // outside their original scheme/host/effective-port origin.\n                if (destination_error || (m_ssl && std::get<0>(destination) != \"https\"))\n                {\n                    callback(error_code(errors::unsupported_url_protocol));\n                    return;\n                }\n                auto effective_port = [](auto const& address) {\n                    int const port = std::get<3>(address);\n                    return port == -1 ? (std::get<0>(address) == \"https\" ? 443 : 80) : port;\n                };\n                std::string redirect_auth = m_auth;\n                if (origin_error || std::get<0>(origin) != std::get<0>(destination)\n                    || !string_equal_no_case(std::get<2>(origin), std::get<2>(destination))\n                    || effective_port(origin) != effective_port(destination))\n                    redirect_auth.clear();\n                get(url, m_completion_timeout, &m_proxy, m_redirects - 1\n                    , m_user_agent, m_bind_addr, m_resolve_flags, redirect_auth",
+  "evidence": [
+    "diagnostics/playback-259/tracker-tls-initial.json: HTTPS-to-HTTP transfer",
+    "diagnostics/playback-259/tracker-auth-baseline.json: 3 cross-origin requests carry generated Basic credentials",
+    "diagnostics/playback-259/engine-tls-observed.json: cancel after observed tracker request waits2.9896s; socket_type.cpp arms3second TLS socket_closer timer"
+  ],
+  "scope": "Build-local exact-source patch: no TLS downgrade; carry Basic credentials only within origin. Original vendor source unchanged. Cancel incomplete buffered responses immediately; completed TLS shutdown unchanged.",
+  "additional_edits": [
+    {
+      "needle": "\tif (force)\n\t{\n\t\tm_sock.close(ec);",
+      "replacement": "\t// A cancelled/incomplete buffered response is discarded. Do not keep its\n\t// session alive for the3-second TLS close-notify timer. Completed responses\n\t// retain ordinary graceful TLS shutdown. No partial body is accepted.\n\tif (force || (m_bottled && !m_parser.finished()))\n\t{\n\t\tm_sock.close(ec);"
+    }
+  ]
+}

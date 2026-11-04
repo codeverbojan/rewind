@@ -1,0 +1,29 @@
+#import "../RWHomePresentation.h"
+int main(void){@autoreleasepool{__block int checks=0,failures=0;void(^check)(BOOL,NSString *)=^(BOOL ok,NSString *label){checks++;if(!ok){failures++;fprintf(stderr,"FAIL %s\n",label.UTF8String);}};
+    NSDictionary *film=@{@"id":@"tt1",@"name":@"A film",@"type":@"movie",@"releaseInfo":@"2026",@"imdbRating":@8.2},*show=@{@"id":@"tt2",@"name":@"A series",@"type":@"series",@"releaseInfo":@"2003–2015"};
+    NSDictionary *old=@{@"layoutVersion":@40,@"hero":film,@"computedAt":@123,@"rows":@[@{@"id":@"for-you",@"title":@"For you",@"items":@[film,show]},@{@"id":@"world",@"items":@[show,film]}]};
+    NSDictionary *page=[RWHomePresentation normalizedHome:old];NSArray *rows=page[@"rows"];
+    check(rows.count==3,@"Cached mixed rows split without a network wait");check([rows[0][@"mediaType"]isEqual:@"movie"]&&[rows[1][@"mediaType"]isEqual:@"series"],@"Migrated rows declare their media type");
+    check([rows[0][@"title"]isEqual:@"Films for you"]&&[rows[1][@"title"]isEqual:@"Series for you"],@"Cached broad headings become explicit");check([rows[2][@"id"]isEqual:@"world"]&&[rows[2][@"items"]count]==1,@"World row retains its policy identity and excludes shows");
+    check([page[@"hero"]isEqual:film]&&[page[@"computedAt"]isEqual:@123],@"Migration preserves hero and evidence timestamp");check([old[@"rows"]count]==2,@"Migration never mutates the saved source");check([[RWHomePresentation normalizedHome:page]isEqual:page],@"New layout does not split again");
+    NSDictionary *broken=@{@"rows":@[NSNull.null,@{@"id":@"new",@"items":@[NSNull.null,film,@{@"type":@"person"}]}]};rows=[RWHomePresentation normalizedHome:broken][@"rows"];check(rows.count==1&&[rows[0][@"items"]count]==1,@"Malformed and non-title records cannot become recommendations");check([rows[0][@"minimumCount"]intValue]==6,@"Specialist migration retains a meaningful row minimum");
+    NSDictionary *text=[RWHomePresentation cardText:film];check([text[@"kind"]isEqual:@"Film"]&&[text[@"secondary"]isEqual:@"2026"]&&[text[@"rating"]isEqual:@"IMDb 8.2"],@"Film identity, year and raw rating stay distinct");
+    check([[RWHomePresentation cardText:show][@"kind"]isEqual:@"Series"],@"Mixed search and library cards identify shows");
+    NSMutableDictionary *resume=[show mutableCopy];resume[@"historyRecord"]=@{@"videoID":@"tt2:1:3",@"position":@125};text=[RWHomePresentation cardText:resume];check([text[@"secondary"]isEqual:@"S1 E3 · 2:05"],@"Continue Watching includes exact episode and progress");check([text[@"accessibility"]containsString:@"Series"]&&[text[@"accessibility"]containsString:@"S1 E3"],@"VoiceOver gets media type and episode identity");
+    resume[@"historyRecord"]=@{@"videoID":@"tt-other:4:7",@"position":@65};check([[RWHomePresentation cardText:resume][@"secondary"]isEqual:@"Resume at 1:05"],@"An unrelated episode ID cannot label this series");
+    resume[@"episodeVideoID"]=@"tt2:2:1";[resume removeObjectForKey:@"historyRecord"];check([[RWHomePresentation cardText:resume][@"secondary"]isEqual:@"S2 E1"],@"Next episode identity remains visible");
+    resume[@"seriesName"]=@"Actual series";resume[@"name"]=@"Episode title";check([[RWHomePresentation cardText:resume][@"title"]isEqual:@"Actual series"],@"Episode cards retain the series identity");
+    NSMutableDictionary *world=[film mutableCopy];world[@"showLanguage"]=@YES;world[@"discovery"]=@{@"primaryLanguage":@"ko"};text=[RWHomePresentation cardText:world];check([text[@"language"]isEqual:@"Korean"]&&[text[@"secondary"]containsString:@"Korean"],@"World Cinema names the language rather than a two-letter code");
+    world[@"discovery"]=@{@"originalLanguages":@[@{@"name":@"Japanese"}]};check([[RWHomePresentation cardText:world][@"language"]isEqual:@"Japanese"],@"Verified named-language fallback remains usable");
+    for(id rating in @[@"8.2 rubbish",@"NaN",@11,NSNull.null]){world[@"imdbRating"]=rating;check(![[RWHomePresentation cardText:world][@"rating"]length],@"Invalid ratings remain absent");}
+    check(![[RWHomePresentation cardText:@{}][@"kind"]length],@"Unknown records are not silently labelled films");
+    check([[RWHomePresentation heading:@{@"recipe":@"for-you",@"mediaType":@"movie"} kids:NO]isEqual:@"Movies for You"],@"Regular Home has a concise typed heading");
+    check([[RWHomePresentation heading:@{@"recipe":@"for-you",@"mediaType":@"series"} kids:YES]isEqual:@"Shows for Kids"],@"Kids Home uses its own typed heading");
+    check([[RWHomePresentation heading:@{@"recipe":@"mood",@"mood":@"Epic adventures",@"mediaType":@"series"} kids:NO]isEqual:@"Epic adventures · Series"],@"The actual mood remains explicit without changing its membership");
+    check([[RWHomePresentation heading:@{@"recipe":@"unknown",@"title":@"Saved titles"} kids:YES]isEqual:@"Saved titles"],@"Unknown recipes preserve their original label");
+    NSArray *mixed=@[@{@"id":@"continue",@"items":@[film,show]},@{@"id":@"movies",@"mediaType":@"movie",@"items":@[film]},@{@"id":@"series",@"mediaType":@"series",@"items":@[show]}];
+    NSArray *movies=[RWHomePresentation rows:mixed mediaType:@"movie"],*series=[RWHomePresentation rows:mixed mediaType:@"series"];
+    check(movies.count==2&&series.count==2,@"Movies and Series reuse typed shelves");check([movies[0][@"items"]isEqual:@[film]]&&[series[0][@"items"]isEqual:@[show]],@"Continue Watching respects destination type");check([[RWHomePresentation rows:mixed mediaType:nil]isEqual:mixed],@"Home retains both media types");check([mixed[0][@"items"]count]==2,@"Filtering cannot mutate shared Home data");
+    check([[RWHomePresentation heading:@{@"recipe":@"category",@"title":@"Family Laughs"} kids:YES]isEqual:@"Family Laughs"],@"Themed shelf keeps its editorial name");
+    printf("{\"checks\":%d,\"failures\":%d}\n",checks,failures);return failures?1:0;
+}}

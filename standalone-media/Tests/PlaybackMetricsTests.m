@@ -1,0 +1,95 @@
+#import <Foundation/Foundation.h>
+#import "../RWPlaybackMetrics.h"
+#include <math.h>
+static int checks=0,failures=0;
+static void check(BOOL ok,const char *message){checks++;if(!ok){failures++;fprintf(stderr,"FAIL: %s\n",message);}}
+int main(){@autoreleasepool{
+    RWPlaybackMetrics *m=[[RWPlaybackMetrics alloc]initAtUptime:10];[m beginAttemptAtUptime:10];
+    [m setContext:@{@"video_id":@"fixture",@"profile_id":@"main"}];
+    check(m.sessionID.length>0&&![m.sessionID isEqual:[[RWPlaybackMetrics alloc]initAtUptime:10].sessionID],"Each playback has a distinct correlation ID");
+    [m markStage:@"sources_requested" uptime:10.25];[m markStage:@"sources_ready" uptime:10.75];
+    [m markStage:@"sources_ready" uptime:11];
+    check([[m snapshot][@"startup_stages_seconds"][@"sources_ready"]doubleValue]==.75,"First stage timing survives repeated callbacks");
+    [m markStage:@"invalid" uptime:NAN];[m markStage:@"before_start" uptime:9];
+    check(![m snapshot][@"startup_stages_seconds"][@"invalid"]&&![m snapshot][@"startup_stages_seconds"][@"before_start"],"Invalid clocks do not enter diagnostics");
+    NSDictionary *early=[m snapshot];[m markStage:@"source_selected" uptime:10.9];[m setContext:@{@"video_id":@"updated"}];
+    check(!early[@"startup_stages_seconds"][@"source_selected"]&&[early[@"context"][@"video_id"]isEqual:@"fixture"],"Previously published snapshots remain stable");
+    [m recordAtUptime:11 position:0 ready:YES wantsPlay:YES frameVisible:NO];
+    [m recordAtUptime:12 position:1 ready:YES wantsPlay:YES frameVisible:YES];
+    [m recordAtUptime:13 position:2 ready:YES wantsPlay:YES frameVisible:YES];
+    check([[m snapshot][@"playing_seconds_estimate"]doubleValue]==2,"Continuous ready playback contributes playing time");
+    check([[m snapshot][@"first_frame_seconds"]doubleValue]==2,"Frame availability is recorded separately");
+    check([[m snapshot][@"first_advancing_playback_seconds"]doubleValue]==2,"Advancing playback is measured");
+    [m recordAtUptime:14 position:2 ready:YES wantsPlay:NO frameVisible:YES];
+    [m recordAtUptime:15 position:2 ready:YES wantsPlay:YES frameVisible:YES];
+    check([[m snapshot][@"stall_events"]intValue]==0,"User pause and resume boundary are not buffering stalls");
+    [m recordAtUptime:16 position:2 ready:YES wantsPlay:YES frameVisible:YES];
+    check([[m snapshot][@"stall_events"]intValue]==1&&[[m snapshot][@"stall_seconds_estimate"]doubleValue]==1,"Sustained playback stopping counts as one stall");
+    [m recordAtUptime:17 position:600 ready:YES wantsPlay:YES frameVisible:YES];
+    check([[m snapshot][@"playing_seconds_estimate"]doubleValue]==2,"A large position jump is not decoded playback");
+    [m recordAtUptime:18 position:601 ready:YES wantsPlay:YES frameVisible:YES];
+    check([[m snapshot][@"playing_seconds_estimate"]doubleValue]==3,"Continuous movement after seeking contributes playing time");
+    [m recordAtUptime:100 position:601 ready:YES wantsPlay:YES frameVisible:YES];
+    check([[m snapshot][@"stall_seconds_estimate"]doubleValue]==1,"Background suspension is not a stall");
+    [m beginAttemptAtUptime:101];[m recordAtUptime:102 position:600 ready:YES wantsPlay:YES frameVisible:YES];
+    check([[m snapshot][@"playing_seconds_estimate"]doubleValue]==3&&[[m snapshot][@"attempts"]intValue]==2,"Retry begins a new movement interval");
+    for(int i=0;i<900;i++)[m recordResources:@{@"resident_bytes":@(i)}];
+    check([m samples].count==720&&[[m snapshot][@"peak_resident_bytes"]intValue]==899,"Long playback keeps bounded samples and peak memory");
+    check([[[m samples]lastObject][@"session_id"]isEqual:m.sessionID],"Resource samples share the session identity");
+    for(int i=0;i<40;i++)[m markStage:[NSString stringWithFormat:@"bounded:%d",i] uptime:102];
+    check([[m snapshot][@"startup_stages_seconds"]count]==32,"Stage storage is bounded");
+    for(int i=0;i<80;i++)[m recordEvent:@"source_failed" values:@{@"attempt":@(i)} uptime:102];
+    check([[m snapshot][@"events"]count]==64&&[[m snapshot][@"events"][0][@"values"][@"attempt"]intValue]==16,"Retry history retains only the most recent bounded events");
+    RWPlaybackMetrics *resume=[[RWPlaybackMetrics alloc]initAtUptime:0];[resume setExpectedStartPosition:600];[resume beginAttemptAtUptime:0];
+    [resume recordAtUptime:1 position:0 ready:NO wantsPlay:YES frameVisible:YES];
+    [resume recordAtUptime:2 position:0 ready:YES wantsPlay:YES frameVisible:YES];
+    check([[resume snapshot][@"first_frame_seconds"]doubleValue]==1&&[[resume snapshot][@"first_advancing_playback_seconds"]doubleValue]<0,"An early display-ready frame does not count as resumed playback");
+    check([[resume snapshot][@"stall_events"]intValue]==0,"Initial preparation is not a playback stall");
+    [resume recordAtUptime:3 position:1 ready:YES wantsPlay:YES frameVisible:YES];
+    check([[resume snapshot][@"first_advancing_playback_seconds"]doubleValue]<0,"Playing the beginning is not success for a requested resume at ten minutes");
+    [resume recordAtUptime:4 position:600 ready:YES wantsPlay:YES frameVisible:YES seeking:YES];
+    [resume recordAtUptime:5 position:601 ready:YES wantsPlay:YES frameVisible:YES seeking:NO];
+    check([[resume snapshot][@"first_advancing_playback_seconds"]doubleValue]<0,"Seek completion alone cannot masquerade as playback");
+    [resume recordAtUptime:6 position:602 ready:YES wantsPlay:YES frameVisible:YES seeking:NO];
+    check([[resume snapshot][@"first_advancing_playback_seconds"]doubleValue]==6,"Advancing at the requested position confirms resume");
+    double playing=[[resume snapshot][@"playing_seconds_estimate"]doubleValue];
+    [resume recordAtUptime:6.1 position:603 ready:YES wantsPlay:YES frameVisible:YES seeking:YES];
+    [resume recordAtUptime:7 position:604 ready:YES wantsPlay:YES frameVisible:YES seeking:NO];
+    check([[resume snapshot][@"playing_seconds_estimate"]doubleValue]==playing,"A short seek between sampling ticks is excluded");
+    [resume noteSeek];[resume recordAtUptime:8 position:605 ready:YES wantsPlay:YES frameVisible:YES];
+    check([[resume snapshot][@"playing_seconds_estimate"]doubleValue]==playing,"An explicit seek invalidates movement even before the next UI sample");
+    check([NSJSONSerialization isValidJSONObject:[resume snapshot]],"The complete diagnostic snapshot is serializable");
+
+    check([[m snapshot][@"context"][@"video_id"]isEqual:@"fixture"],"A later callback cannot rewrite the session's video identity");
+    NSMutableDictionary *mutableProbe=[@{@"nested":@1}mutableCopy];[m setContext:@{@"selected_source":mutableProbe}];mutableProbe[@"nested"]=@2;
+    check([[m snapshot][@"context"][@"selected_source"][@"nested"]intValue]==1,"Session context owns nested values");
+    RWPlaybackMetrics *timed=[[RWPlaybackMetrics alloc]initAtUptime:100];
+    [timed recordEvent:@"source_lookup_completed" values:@{@"duration_seconds":@0.2} uptime:100.4];
+    for(int i=0;i<90;i++)[timed recordEvent:@"buffering" values:@{} uptime:101+i];
+    [timed recordEvent:@"source_lookup_completed" values:@{@"duration_seconds":@8} uptime:200];
+    check([[timed snapshot][@"first_source_lookup"][@"elapsed_seconds"]doubleValue]==.4||fabs([[timed snapshot][@"first_source_lookup"][@"elapsed_seconds"]doubleValue]-.4)<1e-9,"First lookup survives retries and event-ring eviction");
+    NSMutableArray *probes=[NSMutableArray new];for(int i=0;i<14;i++)[probes addObject:@{@"infoHash":[NSString stringWithFormat:@"%040d",i],@"fileIdx":@0,@"timing":@{@"probe_started_uptime":@98,@"cache_check_observed_seconds":@3},@"selectable":@NO}];
+    [timed recordDiscovery:@{@"candidates":probes,@"session_id":@"engine-A"}uptime:102];NSDictionary *snap=[timed snapshot];
+    check([snap[@"torrent_probes"]count]==12,"Candidate timing records stay bounded");
+    check([snap[@"torrent_probes"][0][@"probe_started_from_play_seconds"]doubleValue]==-2,"Detail preparation time before Play remains distinguishable");
+    NSDictionary *failed=@{@"infoHash":probes[0][@"infoHash"],@"fileIdx":@0,@"reason":@"Too slow"};
+    [timed recordDiscovery:@{@"session_id":@"engine-A",@"failures":@[failed],@"exhausted":@YES}uptime:103];
+    check([snap[@"torrent_discovery"][@"session_id"]isEqual:@"engine-A"],"Published discovery summary does not change when a later update arrives");
+    check(![snap[@"torrent_probes"][0][@"failed"]boolValue],"Published probe records remain immutable");
+    NSArray *records=[timed snapshot][@"torrent_probes"];BOOL recorded=NO;for(NSDictionary *r in records)if([r[@"infoHash"]isEqual:failed[@"infoHash"]])recorded=[r[@"failed"]boolValue];check(recorded,"Failure is attached to the same source identity");
+    check([NSJSONSerialization isValidJSONObject:[timed snapshot]],"Bounded probe diagnostics remain valid JSON");
+
+    RWPlaybackMetrics *lookup=[[RWPlaybackMetrics alloc]initAtUptime:10];[lookup setContext:@{@"video_id":@"movie",@"profile_id":@"main",@"type":@"movie",@"requested_quality":@0}];
+    NSMutableDictionary *observation=[@{@"lookup_id":@"request-A",@"video_id":@"movie",@"profile_id":@"main",@"type":@"movie",@"requested_quality":@0,@"foreground":@YES,@"origin":@"providers",@"providers":@{@"providerA":@{@"seconds":@0.25}},@"complete":@NO}mutableCopy];
+    [lookup recordLookupObservation:observation quality:0 uptime:10.3];NSDictionary *firstLookup=[lookup snapshot];
+    observation[@"video_id"]=@"other-film";[lookup recordLookupObservation:observation quality:0 uptime:11];
+    check([[lookup snapshot][@"context"][@"source_lookup"][@"video_id"]isEqual:@"movie"],"Home lookup for another title cannot contaminate playback timing");
+    observation[@"video_id"]=@"movie";observation[@"profile_id"]=@"kids";[lookup recordLookupObservation:observation quality:0 uptime:12];
+    check([[lookup snapshot][@"events"]count]==1,"Other profile lookup is rejected");
+    observation[@"profile_id"]=@"main";observation[@"foreground"]=@NO;[lookup recordLookupObservation:observation quality:0 uptime:13];check([[lookup snapshot][@"events"]count]==1,"Background availability probe is not a foreground source lookup");
+    observation[@"foreground"]=@YES;observation[@"complete"]=@YES;[lookup recordLookupObservation:observation quality:0 uptime:14];
+    check(![firstLookup[@"context"][@"source_lookup"][@"complete"]boolValue]&&[[lookup snapshot][@"context"][@"source_lookup"][@"complete"]boolValue],"Incremental provider observations preserve prior published values");
+    observation[@"requested_quality"]=@720;[lookup recordLookupObservation:observation quality:0 uptime:15];check([[lookup snapshot][@"events"]count]==2,"An old-quality result cannot enter the current player lookup");
+    [lookup recordLookupObservation:observation quality:720 uptime:16];check([[lookup snapshot][@"context"][@"source_lookup"][@"requested_quality"]integerValue]==720&&[[lookup snapshot][@"context"][@"requested_quality"]integerValue]==0,"Quality changes get current measurements without rewriting original intent");
+    printf("{\"checks\":%d,\"failures\":%d}\n",checks,failures);return failures?1:0;
+}}

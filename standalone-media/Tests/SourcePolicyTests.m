@@ -1,0 +1,138 @@
+#import <Foundation/Foundation.h>
+#import "../RWSourcePolicy.h"
+static int failures=0,checks=0;
+static void Check(BOOL condition,NSString *label){checks++;if(!condition){failures++;fprintf(stderr,"FAIL: %s\n",label.UTF8String);}}
+static NSDictionary *Source(NSString *name){return @{ @"url":@"magnet:?xt=urn:btih:0123456789012345678901234567890123456789",@"filename":name,@"seeders":@80 };}
+static BOOL Accept(NSString *name){return [[RWSourcePolicy evaluate:Source(name) quality:0 freeBytes:0][@"eligible"]boolValue];}
+int main(int argc,char **argv){@autoreleasepool{
+    Check(Accept(@"Cambridge.2024.1080p.BluRay.H264.AAC.mp4"),@"Do not confuse Cambridge with CAM");
+    Check(Accept(@"Film.2024.720p.WEB-DL.x264.AAC.mp4"),@"720p native candidate");
+    for(NSString *tag in @[@"HDCAM",@"HDTS",@"CAM",@"TS",@"TeleSync",@"TeleCine",@"DVDSCR",@"Workprint"])
+        Check(!Accept([NSString stringWithFormat:@"Film.2024.1080p.WEB-DL.%@.H264.AAC.mp4",tag]),tag);
+    for(NSString *tag in @[@"2160p",@"4K",@"x265",@"H.265",@"HEVC",@"AV1",@"10bit",@"HDR",@"DV"])
+        Check(!Accept([NSString stringWithFormat:@"Film.2024.1080p.BluRay.%@.AAC.mp4",tag]),tag);
+    Check(!Accept(@"Film.1080p.BluRay.H264.AAC.mkv"),@"Unsupported container");
+    Check(!Accept(@"Film.1080p.H264.AAC.mp4"),@"Unknown release origin");
+    NSMutableDictionary *generated=[@{@"name":@"Generated complete download",@"verifiedWidth":@640,@"verifiedHeight":@360}mutableCopy];
+    Check([[[RWSourcePolicy evaluate:generated quality:0 freeBytes:0]objectForKey:@"rejection"]isEqual:@"Release origin is not identified"],@"124 generated fixture reproduces the missing provenance rejection");
+    generated[@"publisherSource"]=@YES;
+    Check([[RWSourcePolicy evaluate:generated quality:0 freeBytes:0][@"eligible"]boolValue],@"Known generated publisher clip can qualify for offline validation");
+    Check(![[RWSourcePolicy evaluate:generated quality:720 freeBytes:0][@"eligible"]boolValue],@"Known publisher still respects selected resolution");
+    Check(!Accept(@"Film.1080p.BluRay.H264.AC3.mp4"),@"AC3-only hint");
+    Check(!Accept(@"Film.1080p.BluRay.H264.DTS.mp4"),@"DTS-only hint");
+    Check(!Accept(@"Film.1080p.BluRay.H264.AAC5.1.mp4"),@"AAC 5.1 requires the on-device sound check");
+    [RWSourcePolicy setNativeSurroundEnabled:YES];
+    Check(Accept(@"Film.1080p.BluRay.H264.AAC5.1.mp4"),@"Qualified AAC 5.1 uses native stereo downmix");
+    Check(Accept(@"Film.720p.WEB-DL.x264.AAC.5.1.mp4"),@"Separated AAC channel label is recognized");
+    Check(!Accept(@"Film.1080p.BluRay.H264.AAC7.1.mp4"),@"Untested 7.1 remains excluded");
+    Check(!Accept(@"Film.720p.WEB-DL.x264.AC3.5.1.mp4"),@"AAC downmix does not imply native AC3 decoding");
+    Check(!Accept(@"Film.1080p.ATV.WEB-DL.DDP5.1.Atmos.H264.mp4"),@"Joined DDP5.1 label cannot bypass the native codec filter");
+    Check(!Accept(@"Film.720p.WEB-DL.H264.EAC3.5.1.mp4"),@"EAC3 is not admitted by the native surround qualification");
+    NSMutableDictionary *hint=[Source(@"Film.720p.WEBRip.x264.mp4") mutableCopy];hint[@"audioChannelsHint"]=@"5.1";
+    Check([[RWSourcePolicy evaluate:hint quality:0 freeBytes:0][@"eligible"]boolValue],@"YTS 5.1 hint can be probed after qualification");
+    hint[@"audioChannelsHint"]=@"7.1";Check(![[RWSourcePolicy evaluate:hint quality:0 freeBytes:0][@"eligible"]boolValue],@"YTS 7.1 hint exceeds six channels");
+    [RWSourcePolicy setNativeSurroundEnabled:NO];hint[@"audioChannelsHint"]=@"5.1";
+    Check(![[RWSourcePolicy evaluate:hint quality:0 freeBytes:0][@"eligible"]boolValue],@"Qualification can be revoked");
+    [RWSourcePolicy setLegacyEnabled:YES];Check(Accept(@"Show.720p.WEB-DL.H264.AC3.5.1.mkv"),@"VLC multichannel path is separate from native AAC qualification");[RWSourcePolicy setLegacyEnabled:NO];
+    Check([[RWSourcePolicy evaluate:Source(@"Film.720p.WEBRip.x264.AAC.mp4") quality:0 freeBytes:0][@"score"]doubleValue]>[[RWSourcePolicy evaluate:Source(@"Film.1080p.WEBRip.x264.AAC.mp4") quality:0 freeBytes:0][@"score"]doubleValue],@"Auto favors 720p over an otherwise equivalent 1080p source");
+    Check(Accept(@"Film.1080p.BluRay.H264.DTS.AAC.mp4"),@"AAC alternate may be probed");
+    Check(!Accept(@"Film.1080p.BluRay.H264.AAC.sample.mp4"),@"Sample cannot substitute for film");
+    NSDictionary *stream=@{@"infoHash":@"ABCDEF0123456789ABCDEF0123456789ABCDEF01",@"fileIdx":@2,@"name":@"Torrentio\n1080p",@"title":@"Film.2024.1080p.BluRay.H264.AAC\n👤 125 💾 2.3 GB",@"sources":@[@"tracker:udp://tracker.torrent.eu.org:451",@"tracker:file:///tmp/local"],@"behaviorHints":@{@"filename":@"Film.2024.1080p.BluRay.H264.AAC.mp4"}};
+    NSDictionary *normal=[RWSourcePolicy normalize:stream provider:@"Fixture"];
+    Check([normal[@"url"]hasPrefix:@"magnet:?xt=urn:btih:abcdef"],@"Validated normalized hash");
+    Check([normal[@"url"]containsString:@"tr=udp"]&&![normal[@"url"]containsString:@"file"],@"Only supported trackers");
+    Check([normal[@"seeders"]intValue]==125&&[normal[@"sizeBytes"]longLongValue]>2400000000LL,@"Parse hints without displaying provider emoji");
+    NSMutableDictionary *spoof=[stream mutableCopy];spoof[@"requestedVideoID"]=@"tt999:4:8";spoof[@"resolvedFileIdx"]=@99;spoof[@"resolvedFilename"]=@"unverified.mkv";
+    NSDictionary *clean=[RWSourcePolicy normalize:spoof provider:@"Fixture"];
+    Check(!clean[@"requestedVideoID"]&&!clean[@"resolvedFileIdx"]&&!clean[@"resolvedFilename"],@"Provider cannot supply trusted episode or resolved metadata identity");
+    NSDictionary *bound=[RWSourcePolicy sources:@[spoof] withMeta:@{@"id":@"tt123",@"runtime":@25} videoID:@"tt123:1:2"].firstObject;
+    Check([bound[@"requestedVideoID"]isEqual:@"tt123:1:2"],@"Caller exact episode overrides provider and series base ID");
+    Check(![RWSourcePolicy sources:@[spoof] withMeta:@{}].firstObject[@"requestedVideoID"],@"Missing caller context cannot retain spoofed episode");
+    NSMutableDictionary *variant=[normal mutableCopy];variant[@"fileIdx"]=@3;
+    Check([RWSourcePolicy rank:@[normal,variant] quality:0 freeBytes:0].count==2,@"Same torrent distinct files survive ranking");
+    variant=[normal mutableCopy];variant[@"filename"]=@"Other.2024.1080p.BluRay.H264.AAC.mp4";
+    Check([RWSourcePolicy rank:@[normal,variant] quality:0 freeBytes:0].count==2,@"Conflicting file hints cannot overwrite a valid alternative");
+    NSString *publisherMagnet=@"magnet:?xt=urn:btih:c9e15763f722f23e98a29decdfae341b98d53056&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce";
+    NSDictionary *publisher=[RWSourcePolicy normalize:@{@"url":publisherMagnet,@"publisherSource":@YES,@"publicTest":@YES} provider:@"Saved source"];
+    Check([publisher[@"infoHash"]isEqual:@"c9e15763f722f23e98a29decdfae341b98d53056"],@"Raw publisher magnet gets the discovery identity");
+    Check([publisher[@"url"]isEqual:publisherMagnet],@"Raw tracker query is preserved exactly");
+    NSDictionary *again=[RWSourcePolicy normalize:publisher provider:@"Saved source"];
+    Check([again[@"url"]isEqual:publisherMagnet]&&[again[@"infoHash"]isEqual:publisher[@"infoHash"]],@"Normalization remains idempotent with a tracker-bearing magnet");
+    Check(![RWSourcePolicy normalize:@{@"url":publisherMagnet,@"infoHash":@"1111111111111111111111111111111111111111"} provider:@"Saved source"],@"Conflicting explicit and magnet identities are rejected");
+    Check(![RWSourcePolicy normalize:@{@"url":[publisherMagnet stringByAppendingString:@"&xt=urn:btih:1111111111111111111111111111111111111111"]} provider:@"Saved source"],@"Conflicting exact-topic identities are rejected");
+    Check(![RWSourcePolicy normalize:@{@"url":@"magnet:?dn=no-hash"} provider:@"Saved source"],@"Missing identity cannot enter a race as a false eligible source");
+    Check(![RWSourcePolicy normalize:@{@"url":@"magnet:?xt=urn:btih:bad"} provider:@"Saved source"],@"Malformed magnet hash rejected");
+    NSDictionary *base32=[RWSourcePolicy normalize:@{@"url":@"MAGNET:?xt=urn%3Abtih%3AZHQVOY7XELZD5GFCTXWN7LRUDOMNKMCW&dn=Blender"} provider:@"Saved source"];
+    Check([base32[@"infoHash"]isEqual:publisher[@"infoHash"]]&&[base32[@"url"]hasPrefix:@"magnet:"],@"Base32/percent-encoded legacy magnet identity resolves exactly");
+    NSString *privateMagnet=[publisherMagnet stringByReplacingOccurrencesOfString:@"udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce" withString:@"http%3A%2F%2Fprivate.example%2Fannounce%3Fkey%3Dfixture"];
+    Check([[RWSourcePolicy normalize:@{@"url":privateMagnet} provider:@"Torrentio"][@"url"]isEqual:privateMagnet],@"Imported tracker list never receives public additions");
+    Check(![RWSourcePolicy normalize:@{@"url":@"magnet:?xt=urn:btih:0000000000000000000000000000000!AA"} provider:@"Saved source"],@"Invalid base32 alphabet rejected");
+    NSMutableDictionary *small=[Source(@"Episode.720p.WEB-DL.H264.AAC.mp4")mutableCopy];small[@"sizeBytes"]=@175686637;small[@"infoHash"]=@"1111111111111111111111111111111111111111";
+    NSMutableDictionary *large=[small mutableCopy];large[@"sizeBytes"]=@775805010;large[@"infoHash"]=@"2222222222222222222222222222222222222222";
+    NSArray *context=[RWSourcePolicy sources:@[large,small] withMeta:@{@"runtime":@"25 min"}];
+    NSArray *efficient=[RWSourcePolicy rank:context quality:720 freeBytes:0];
+    Check([efficient[0][@"infoHash"]isEqual:small[@"infoHash"]],@"Equivalent-quality and seed-count sources prefer lower streaming bandwidth");
+    Check([efficient[0][@"estimatedBytesPerSecond"]doubleValue]>117000&&[efficient[0][@"estimatedBytesPerSecond"]doubleValue]<118000,@"Episode size and catalog duration produce an explicit bitrate estimate");
+    Check(![RWSourcePolicy sources:@[small] withMeta:@{@"runtime":@"unknown"}][0][@"durationHintSeconds"],@"Unknown runtime does not become an invented duration");
+    Check([[RWSourcePolicy sources:@[small] withMeta:@{@"runtime":@25}][0][@"durationHintSeconds"]intValue]==1500,@"Numeric catalog runtime uses minutes");
+    NSMutableDictionary *seeded=[small mutableCopy];seeded[@"seeders"]=@90;seeded[@"infoHash"]=@"3333333333333333333333333333333333333333";small[@"seeders"]=@1;
+    Check([[RWSourcePolicy rank:@[small,seeded] quality:720 freeBytes:0][0][@"infoHash"]isEqual:seeded[@"infoHash"]],@"Comparable encodes with higher advertised seed counts are probed first");
+    Check([[RWSourcePolicy evaluate:normal quality:1080 freeBytes:0][@"name"]isEqual:@"1080p · Blu-ray"],@"Clean UI label");
+    Check(![[RWSourcePolicy evaluate:normal quality:720 freeBytes:0][@"eligible"]boolValue],@"Fixed quality does not silently downgrade");
+    Check(![[RWSourcePolicy evaluate:normal quality:0 freeBytes:2500000000ULL][@"eligible"]boolValue],@"Free space includes reserve");
+    NSMutableDictionary *bad=[stream mutableCopy];bad[@"infoHash"]=@"../../bad";Check(![RWSourcePolicy normalize:bad provider:@"Fixture"],@"Invalid infohash rejected");
+    bad=[stream mutableCopy];bad[@"fileIdx"]=@(-1);Check(![RWSourcePolicy normalize:bad provider:@"Fixture"],@"Negative file index rejected");
+    bad[@"fileIdx"]=@1.5;Check(![RWSourcePolicy normalize:bad provider:@"Fixture"],@"Fractional file index rejected");
+    bad[@"fileIdx"]=NSNull.null;bad[@"behaviorHints"]=NSNull.null;bad[@"sources"]=NSNull.null;Check([RWSourcePolicy normalize:bad provider:@"Fixture"]!=nil,@"Null optional provider fields");
+    bad=[normal mutableCopy];bad[@"publisherSource"]=NSNull.null;bad[@"isPreview"]=NSNull.null;bad[@"verifiedPlayback"]=NSNull.null;Check([RWSourcePolicy evaluate:bad quality:0 freeBytes:0]!=nil,@"Malformed optional flags do not crash");
+    Check([RWSourcePolicy rank:@[normal,normal] quality:0 freeBytes:0].count==1,@"Duplicate candidate removed");
+    NSMutableDictionary *bare=[stream mutableCopy];[bare removeObjectForKey:@"sources"];
+    Check([[RWSourcePolicy normalize:bare provider:@"Torrentio"][@"url"]containsString:@"opentrackr"],@"Public provider's trackerless result receives discovery defaults");
+    Check(![[RWSourcePolicy normalize:bare provider:@"Saved source"][@"url"]containsString:@"opentrackr"],@"Imported magnets do not inherit public trackers");
+    bare[@"sources"]=@[@"tracker:http://private.example/announce?passkey=secret"];
+    Check(![[RWSourcePolicy normalize:bare provider:@"Torrentio"][@"url"]containsString:@"opentrackr"],@"Explicit tracker list is preserved without public defaults");
+    bare[@"sources"]=@[@"tracker:https://private.example/announce"];
+    Check(![[RWSourcePolicy normalize:bare provider:@"Torrentio"][@"url"]containsString:@"&tr="],@"No unsupported TLS trackers and no private-to-public fallback");
+    NSDictionary *yts=@{@"data":@{@"movies":@[@{@"imdb_code":@"tt123",@"title":@"Film",@"torrents":@[@{@"hash":stream[@"infoHash"],@"quality":@"720p",@"type":@"web",@"video_codec":@"x264",@"bit_depth":@"8",@"audio_channels":@"2.0",@"seeds":@120,@"size_bytes":@1000000000}]}]}};
+    NSArray *direct=[RWSourcePolicy ytsSources:yts imdbID:@"tt123"];
+    Check(direct.count==1&&[RWSourcePolicy rank:direct quality:720 freeBytes:0].count==1,@"YTS exact IMDb mapping produces a native candidate");
+    Check([RWSourcePolicy ytsSources:yts imdbID:@"tt456"].count==0,@"YTS cannot substitute a different movie");
+    Check([direct[0][@"metadataURL"]hasPrefix:@"https://yts.gg/torrent/download/"],@"Only pinned YTS metadata URL generated");
+    Check([RWSourcePolicy ytsSources:@{@"data":NSNull.null} imdbID:@"tt123"].count==0,@"Malformed YTS data is ignored");
+    NSMutableDictionary *withMetadata=[normal mutableCopy];withMetadata[@"metadataURL"]=direct[0][@"metadataURL"];
+    NSArray *merged=[RWSourcePolicy rank:@[normal,withMetadata] quality:0 freeBytes:0];
+    Check(merged.count==1&&merged[0][@"metadataURL"]!=nil,@"Deduplication retains direct metadata access");
+    NSMutableDictionary *known=[normal mutableCopy];known[@"localSuccess"]=@YES;
+    NSMutableDictionary *failed=[normal mutableCopy];failed[@"infoHash"]=@"1111111111111111111111111111111111111111";failed[@"localFailure"]=@YES;failed[@"seeders"]=@100000;
+    NSArray *experienced=[RWSourcePolicy rank:@[failed,known] quality:0 freeBytes:0];
+    Check([experienced[0][@"infoHash"]isEqual:normal[@"infoHash"]],@"Working device evidence outranks inflated seed hints after failure");
+    known[@"filename"]=@"Film.1080p.WEBRip.HEVC.AAC.mp4";
+    Check(![[RWSourcePolicy evaluate:known quality:0 freeBytes:0][@"eligible"]boolValue],@"Past success cannot bypass codec eligibility");
+    NSMutableDictionary *media=[@{@"width":@1920,@"height":@800,@"videoCodec":@"avc1",@"fps":@24,@"profile":@100,@"level":@41,@"aacStereo":@YES}mutableCopy];
+    Check(![RWSourcePolicy mediaRejection:media quality:1080],@"Cropped cinema frame is 1080-class");
+    Check([RWSourcePolicy mediaRejection:media quality:720]!=nil,@"Actual media overrides claimed quality");
+    media[@"width"]=@3840;Check([RWSourcePolicy mediaRejection:media quality:0]!=nil,@"Actual UHD rejected");media[@"width"]=@1920;
+    media[@"fps"]=@60;Check([RWSourcePolicy mediaRejection:media quality:0]!=nil,@"Actual 60fps rejected");media[@"fps"]=@24;
+    media[@"profile"]=@110;Check([RWSourcePolicy mediaRejection:media quality:0]!=nil,@"Actual High10 rejected");media[@"profile"]=@100;
+    media[@"aacStereo"]=NSNull.null;Check([RWSourcePolicy mediaRejection:media quality:0]!=nil,@"Missing actual audio rejected");
+    media[@"aacDownmix"]=@YES;Check(![RWSourcePolicy mediaRejection:media quality:0],@"Verified native downmix passes actual media policy");
+    media[@"aacDownmix"]=NSNull.null;Check([RWSourcePolicy mediaRejection:media quality:0]!=nil,@"A missing downmix result cannot bypass audio verification");
+    Check([RWSourcePolicy resolutionForWidth:640 height:360]==360,@"360p must not be advertised as 480p");
+    Check([RWSourcePolicy resolutionForWidth:960 height:540]==540,@"540p must not be advertised as 720p");
+    Check([RWSourcePolicy resolutionForWidth:1600 height:900]==900,@"900p must not be advertised as 1080p");
+    Check(![[RWSourcePolicy evaluate:Source(@"Film.360p.WEB-DL.H264.AAC.mp4") quality:480 freeBytes:0][@"eligible"]boolValue],@"Fixed 480p does not accept a labelled 360p encode");
+    NSArray *queue=@[@{@"infoHash":@"a",@"fileIdx":@1},@{@"infoHash":@"a",@"fileIdx":@2},@{@"infoHash":@"b"}];
+    Check([RWSourcePolicy nextIndexInSources:queue startingAt:0 excludingHashes:[NSSet setWithObject:@"a"]]==2,@"A dead swarm is skipped across all of its encodes");
+    Check([RWSourcePolicy nextIndexInSources:queue startingAt:0 excludingHashes:[NSSet set]]==0,@"Media rejection alone does not exclude other encodes");
+    Check([RWSourcePolicy nextIndexInSources:queue startingAt:2 excludingHashes:[NSSet setWithObject:@"b"]]==3,@"Exhausted candidate queue terminates");
+    NSMutableArray *coverage=[NSMutableArray new];
+    for(int i=1;i<argc;i++){
+        NSData *data=[NSData dataWithContentsOfFile:@(argv[i])];NSDictionary *root=[NSJSONSerialization JSONObjectWithData:data options:0 error:nil];NSMutableArray *all=[NSMutableArray new];
+        for(NSDictionary *raw in root[@"streams"]){NSDictionary *source=[RWSourcePolicy normalize:raw provider:@"Torrentio"];if(source)[all addObject:source];}
+        NSArray *ranked=[RWSourcePolicy rank:all quality:0 freeBytes:0];Check(ranked.count>0,[@(argv[i]).lastPathComponent stringByAppendingString:@" has native candidates"]);
+        [coverage addObject:@{@"fixture":@(argv[i]).lastPathComponent,@"candidates":@(all.count),@"eligible":@(ranked.count),@"qualities":[RWSourcePolicy qualities:all]}];
+    }
+    NSDictionary *report=@{@"checks":@(checks),@"failures":@(failures),@"coverage":coverage,@"scope":@"Metadata and selection policy only; no playback or swarm availability claim"};
+    puts([[NSString alloc]initWithData:[NSJSONSerialization dataWithJSONObject:report options:NSJSONWritingPrettyPrinted error:nil] encoding:NSUTF8StringEncoding].UTF8String);
+    return failures?1:0;
+}}

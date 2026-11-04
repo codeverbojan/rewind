@@ -1,0 +1,8 @@
+Rewind personal research build — discovery data
+
+IMDb ratings and vote counts: https://data.imdb.com/non-commercial-datasets/
+Dataset used under IMDb personal/non-commercial conditions. This privately built app is not approved for public distribution of the dataset.
+Wikidata factual metadata: CC0. https://www.wikidata.org/wiki/Wikidata:Data_access
+TVmaze: CC BY-SA. https://www.tvmaze.com/api
+Cinemeta: title descriptions and artwork retain their original rights.
+Language and credits retain source URLs and entity revisions in the metadata cache.

@@ -1,0 +1,5 @@
+Generated 40-second audio-selection fixtures for Rewind. CC0.
+Video is the project-generated moving-colour test. Audio: French-labelled stereo220Hz, English-labelled six-channel centre660Hz/rear880Hz/rear1100Hz, English commentary-labelled stereo330Hz. Labels test metadata selection; tones are not spoken-language proof.
+Generation recipe: diagnostics/playback-241/generate-audio-fixtures.py
+
+The derived audio-fallback.mp4 and audio-fallback.mkv fixtures use the same CC0 video/tones, remuxed to test unknown language/default and audio-description metadata. Labels are synthetic; no spoken-language audibility is claimed.

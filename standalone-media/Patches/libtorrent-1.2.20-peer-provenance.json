@@ -1,0 +1,31 @@
+{
+  "source_sha256": "7d427a736c53e297a5b2dad8910d2f8ec61c314e0bbd1537d8810936cf91747c",
+  "purpose": "Observations only; tracker response origin carried across hostname resolution without libtorrent public ABI changes",
+  "edits": [
+    {
+      "needle": "#include \"libtorrent/config.hpp\"",
+      "replacement": "#include \"libtorrent/config.hpp\"\n#define RW_TRACKER_LIBRARY_BUILD 1\n#include \"RWTrackerObserverABI.h\"",
+      "count": 1
+    },
+    {
+      "needle": "\tvoid torrent::tracker_response(",
+      "replacement": "\tstatic bool RWReportTracker(void const* owner, std::string const& url, unsigned kind,\n        std::size_t count, bool stopped, tcp::endpoint const* endpoint = nullptr)\n    {\n        if (!RWObserveTracker) return false;\n        RWTrackerObservation e{};e.version=1;e.kind=kind;e.torrent=owner;\n        e.url=url.data();e.url_length=static_cast<uint32_t>(std::min(url.size(),std::size_t(UINT32_MAX)));\n        e.count=static_cast<uint32_t>(std::min(count,std::size_t(UINT32_MAX)));e.stopped=stopped;\n        if(endpoint){e.port=endpoint->port();\n            if(endpoint->address().is_v4()){auto bytes=endpoint->address().to_v4().to_bytes();e.address_length=4;std::copy(bytes.begin(),bytes.end(),e.address);}\n            else{auto address=endpoint->address().to_v6();auto bytes=address.to_bytes();e.address_length=16;e.scope=address.scope_id();std::copy(bytes.begin(),bytes.end(),e.address);}\n        }\n        return RWObserveTracker(&e);\n    }\n\n\tvoid torrent::tracker_response(",
+      "count": 1
+    },
+    {
+      "needle": "\t\tTORRENT_ASSERT(0 == (r.kind & tracker_request::scrape_request));",
+      "replacement": "\t\tTORRENT_ASSERT(0 == (r.kind & tracker_request::scrape_request));\n        bool const rw_stopped = r.event == tracker_request::stopped;\n        bool const rw_observe = RWReportTracker(this,r.url,RWTrackerResponse,\n            resp.peers.size()+resp.peers4.size()+resp.peers6.size(),rw_stopped);\n        // A single bounded shared origin survives asynchronous hostname resolution.\n        auto const rw_origin = rw_observe ? std::make_shared<std::string const>(r.url)\n            : std::shared_ptr<std::string const>();",
+      "count": 1
+    },
+    {
+      "needle": "\t\t\t\tADD_OUTSTANDING_ASYNC(\"torrent::on_peer_name_lookup\");\n\t\t\t\tm_ses.get_resolver().async_resolve(i.hostname, resolver_interface::abort_on_shutdown\n\t\t\t\t\t, std::bind(&torrent::on_peer_name_lookup, shared_from_this(), _1, _2, i.port));",
+      "replacement": "                if(rw_observe)RWReportTracker(this,r.url,RWTrackerDNSStarted,1,rw_stopped);\n                ADD_OUTSTANDING_ASYNC(\"torrent::on_peer_name_lookup\");\n                m_ses.get_resolver().async_resolve(i.hostname, resolver_interface::abort_on_shutdown,\n                    [self=shared_from_this(),port=i.port,rw_origin,rw_stopped](error_code const& error,std::vector<address> const& hosts){\n                        if(rw_origin){\n                            bool const resolved=!error&&!hosts.empty()&&!self->m_abort&&!self->m_ses.is_aborted();\n                            RWReportTracker(self.get(),*rw_origin,resolved?RWTrackerDNSResolved:RWTrackerDNSFailed,1,rw_stopped);\n                            if(resolved){tcp::endpoint endpoint(hosts.front(),std::uint16_t(port));RWReportTracker(self.get(),*rw_origin,RWTrackerEndpoint,1,rw_stopped,&endpoint);}\n                        }\n                        self->on_peer_name_lookup(error,hosts,port);\n                    });",
+      "count": 1
+    },
+    {
+      "needle": "\t\t\tneed_update |= bool(add_peer(a, peer_info::tracker) != nullptr);",
+      "replacement": "            if(rw_observe)RWReportTracker(this,r.url,RWTrackerEndpoint,1,rw_stopped,&a);\n\t\t\tneed_update |= bool(add_peer(a, peer_info::tracker) != nullptr);",
+      "count": 2
+    }
+  ]
+}

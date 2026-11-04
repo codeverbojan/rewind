@@ -1,0 +1,3 @@
+Authored for Rewind diagnostics; CC0 1.0. 30 seconds, 24 fps.
+32 centre cells encode A000|frame then its bitwise complement.
+Frame PTS must include the muxed offset recorded in fixture-verification.json.

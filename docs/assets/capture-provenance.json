@@ -1,0 +1,51 @@
+{
+  "movies": {
+    "checkpoint": "0.229",
+    "source_sha256": "1e88aca5055bd044b8505fc214208494dc6df01f4444f49a9389f1d6d1521eea",
+    "width": 1024,
+    "height": 768,
+    "processing": "JPEG encoding; full original frame, no UI alteration"
+  },
+  "series-detail": {
+    "checkpoint": "0.229",
+    "source_sha256": "94ba56ce071f3f6da61898bf9bec2c8ee8d9483fee5d388eb65a820b1246cdf9",
+    "width": 1024,
+    "height": 768,
+    "processing": "JPEG encoding; full original frame, no UI alteration"
+  },
+  "kids": {
+    "checkpoint": "0.229",
+    "source_sha256": "f315785ae77cca367c8e64501b132127dbbaed8db55401d636e9e2ffdf2e5c22",
+    "width": 1024,
+    "height": 768,
+    "processing": "JPEG encoding; full original frame, no UI alteration"
+  },
+  "person": {
+    "checkpoint": "0.230",
+    "source_sha256": "54671eacb9d94004941ebe0cd885c92fe07a3e657e6eaa64be7aa894f12abc6c",
+    "width": 1024,
+    "height": 768,
+    "processing": "JPEG encoding; full original frame, no UI alteration"
+  },
+  "episodes": {
+    "checkpoint": "0.229",
+    "source_sha256": "6883c47eb631398122e50eb8560980afcde002aaedcd6e06c342053e6cbc8360",
+    "width": 1024,
+    "height": 768,
+    "processing": "JPEG encoding; full original frame, no UI alteration"
+  },
+  "studio": {
+    "checkpoint": "0.230",
+    "source_sha256": "a0500160ae0556ab7359b3e8738ba4645db7df87b877e9779158908d619aeaeb",
+    "width": 1024,
+    "height": 768,
+    "processing": "JPEG encoding; full original frame, no UI alteration"
+  },
+  "profiles": {
+    "checkpoint": "0.156",
+    "source_sha256": "51f1e236f6d319f101955a32fc612a124898f489ba0b0fe0c95acd0f7e8fcee9",
+    "width": 768,
+    "height": 1024,
+    "processing": "JPEG encoding; full original frame, no UI alteration"
+  }
+}

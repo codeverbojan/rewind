@@ -1,0 +1,51 @@
+#import "../RWFeedStore.h"
+#import "../RWFeedStorageBudget.h"
+#import "../RWFeedArchive.h"
+static BOOL Wait(BOOL(^done)(void)){NSDate *limit=[NSDate dateWithTimeIntervalSinceNow:8];while(!done()&&limit.timeIntervalSinceNow>0)[NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.002]];return done();}
+static unsigned long long Bytes(NSString *folder){unsigned long long bytes=0;for(NSString *name in [NSFileManager.defaultManager contentsOfDirectoryAtPath:folder error:nil])bytes+=[[NSFileManager.defaultManager attributesOfItemAtPath:[folder stringByAppendingPathComponent:name] error:nil][NSFileSize]unsignedLongLongValue];return bytes;}
+int main(){@autoreleasepool{__block int checks=0,failures=0;
+#define CHECK(...) do{checks++;if(!(__VA_ARGS__)){failures++;fprintf(stderr,"FAIL line %d\n",__LINE__);}}while(0)
+    NSFileManager *fm=NSFileManager.defaultManager;NSString *folder=[NSTemporaryDirectory()stringByAppendingPathComponent:NSUUID.UUID.UUIDString];[fm createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:nil];NSMutableArray *feeds=[NSMutableArray new];NSMutableArray *records=[NSMutableArray new];NSString *longName=[@"Film " stringByPaddingToLength:1100 withString:@"representative title metadata " startingAtIndex:0];
+    for(int i=0;i<1600;i++)[records addObject:@{@"id":[NSString stringWithFormat:@"tt%d",i],@"type":i%2?@"series":@"movie",@"name":[longName stringByAppendingFormat:@" %d",i],@"year":@(1900+i%120),@"imdbRating":@(5+(i%50)/10.0)}];
+    __block BOOL done=NO;unsigned long long activeBytes=0,parkedBytes=0;double parkSeconds=0,restoreSeconds=0;
+    @try{
+        RWFeedStore *first=[[RWFeedStore alloc]initWithFolder:folder context:@"regular:first"];[feeds addObject:first];
+        [first appendPages:records progress:^(NSUInteger added,NSString *error,BOOL finished){CHECK(!error);if(finished)done=YES;}];CHECK(Wait(^BOOL{return done;}));CHECK(first.count==1600&&first.pagesComplete);activeBytes=Bytes(folder);
+        RWFeedStore *second=[[RWFeedStore alloc]initWithFolder:folder context:@"regular:second"];[feeds addObject:second];
+        done=NO;[second append:records done:^(NSUInteger added,NSString *error){CHECK(error.length&&added==0);done=YES;}];CHECK(Wait(^BOOL{return done;}));CHECK(second.count==0);
+        NSUInteger revision=first.revision;[first park];CHECK(Wait(^BOOL{return [first.diagnostics[@"residency"][@"parked"]boolValue];}));parkedBytes=[first.diagnostics[@"residency"][@"archive_bytes"]unsignedLongLongValue];parkSeconds=[first.diagnostics[@"residency"][@"seconds"]doubleValue];CHECK(parkedBytes<activeBytes/2);CHECK(first.count==1600&&first.revision==revision&&first.pagesComplete);
+        done=NO;[first loadRange:NSMakeRange(0,1) done:^(NSString *error){CHECK(error.length);done=YES;}];CHECK(done&&! [first cachedItem:0]);
+        done=NO;[second append:records done:^(NSUInteger added,NSString *error){CHECK(!error&&added==1600);done=YES;}];CHECK(Wait(^BOOL{return done;}));CHECK(Bytes(folder)<=RWFeedDiskBudgetBytes);
+        [second park];CHECK(Wait(^BOOL{return [second.diagnostics[@"residency"][@"parked"]boolValue];}));[first activate];
+        for(NSUInteger offset=0;offset<records.count;offset+=160){done=NO;[first loadRange:NSMakeRange(offset,160) done:^(NSString *error){CHECK(!error);done=YES;}];CHECK(Wait(^BOOL{return done;}));BOOL allMatch=YES;for(NSUInteger i=offset;i<offset+160;i++)if(![[first cachedItem:i][@"id"]isEqual:records[i][@"id"]])allMatch=NO;CHECK(allMatch);}
+        restoreSeconds=[first.diagnostics[@"residency"][@"seconds"]doubleValue];CHECK(![first.diagnostics[@"residency"][@"parked"]boolValue]);CHECK(first.revision==revision&&first.count==1600&&[first.diagnostics[@"memory_records"]integerValue]<=200);CHECK(Bytes(folder)<=RWFeedDiskBudgetBytes);
+        // Filters and visible order survive repeated parking, including a late
+        // inactive write from an already issued network response.
+        done=NO;[first selectType:@"series" sort:@"Rating" done:^(NSString *error){CHECK(!error);done=YES;}];CHECK(Wait(^BOOL{return done;}));CHECK(first.count==800);
+        done=NO;[first loadRange:NSMakeRange(0,10) done:^(NSString *error){CHECK(!error);done=YES;}];CHECK(Wait(^BOOL{return done;}));NSDictionary *top=[first cachedItem:0];[first park];
+        done=NO;[first append:@[@{@"id":@"tt-late",@"type":@"series",@"name":@"Late result",@"imdbRating":@10}] done:^(NSUInteger added,NSString *error){CHECK(!error&&added==1);done=YES;}];CHECK(Wait(^BOOL{return done;}));CHECK([first.diagnostics[@"residency"][@"parked"]boolValue]&&first.count==801);
+        [first activate];done=NO;[first loadRange:NSMakeRange(0,10) done:^(NSString *error){CHECK(!error&&[[first cachedItem:0]isEqual:top]);done=YES;}];CHECK(Wait(^BOOL{return done;}));
+        [first park];CHECK(Wait(^BOOL{return [first.diagnostics[@"residency"][@"parked"]boolValue];}));
+        // Twelve retained navigation contexts share the original permanent cap.
+        for(int j=2;j<12;j++){RWFeedStore *feed=[[RWFeedStore alloc]initWithFolder:folder context:[NSString stringWithFormat:@"regular:%d",j]];[feeds addObject:feed];done=NO;[feed append:[records subarrayWithRange:NSMakeRange(0,900)] done:^(NSUInteger added,NSString *error){CHECK(!error&&added==900);done=YES;}];CHECK(Wait(^BOOL{return done;}));[feed park];CHECK(Wait(^BOOL{return [feed.diagnostics[@"residency"][@"parked"]boolValue];}));CHECK(Bytes(folder)<=RWFeedDiskBudgetBytes);}
+        for(RWFeedStore *feed in feeds){[feed activate];done=NO;[feed loadRange:NSMakeRange(feed.count-1,1) done:^(NSString *error){CHECK(!error&&[feed cachedItem:feed.count-1]);done=YES;}];CHECK(Wait(^BOOL{return done;}));[feed park];CHECK(Wait(^BOOL{return [feed.diagnostics[@"residency"][@"parked"]boolValue];}));CHECK(Bytes(folder)<=RWFeedDiskBudgetBytes);}
+        for(RWFeedStore *feed in feeds){done=NO;[feed close:^{done=YES;}];CHECK(Wait(^BOOL{return done;}));}[feeds removeAllObjects];CHECK(![fm contentsOfDirectoryAtPath:folder error:nil].count);
+        // An initial quota failure is retryable after space becomes available.
+        NSString *quota=[folder stringByAppendingPathComponent:@"quota.sqlite"];[[NSMutableData dataWithLength:RWFeedDiskBudgetBytes]writeToFile:quota atomically:YES];RWFeedStore *retry=[[RWFeedStore alloc]initWithFolder:folder context:@"retry"];[feeds addObject:retry];
+        done=NO;[retry append:@[records[0]] done:^(NSUInteger added,NSString *error){CHECK(error.length&&!added);done=YES;}];CHECK(Wait(^BOOL{return done;}));[fm removeItemAtPath:quota error:nil];
+        done=NO;[retry append:@[records[0]] done:^(NSUInteger added,NSString *error){CHECK(!error&&added==1);done=YES;}];CHECK(Wait(^BOOL{return done;}));[retry park];CHECK(Wait(^BOOL{return [retry.diagnostics[@"residency"][@"parked"]boolValue];}));
+        NSString *archive=nil;for(NSString *name in [fm contentsOfDirectoryAtPath:folder error:nil])if([name hasSuffix:@".gz"])archive=[folder stringByAppendingPathComponent:name];NSData *valid=[NSData dataWithContentsOfFile:archive];CHECK(valid.length>0);
+        // No room for restoration must leave the archived records available.
+        [[NSMutableData dataWithLength:RWFeedDiskBudgetBytes-valid.length-4096]writeToFile:quota atomically:YES];[retry activate];done=NO;[retry loadRange:NSMakeRange(0,1) done:^(NSString *error){CHECK(error.length);done=YES;}];CHECK(Wait(^BOOL{return done;}));CHECK([[NSData dataWithContentsOfFile:archive]isEqual:valid]&&retry.count==1);[fm removeItemAtPath:quota error:nil];
+        // Restoration must not overwrite a corrupt archive with an empty list.
+        [[valid subdataWithRange:NSMakeRange(0,valid.length-1)]writeToFile:archive atomically:YES];[retry activate];done=NO;[retry loadRange:NSMakeRange(0,1) done:^(NSString *error){CHECK(error.length&&! [retry cachedItem:0]);done=YES;}];CHECK(Wait(^BOOL{return done;}));CHECK(retry.count==1&&[fm fileExistsAtPath:archive]);CHECK([fm contentsOfDirectoryAtPath:folder error:nil].count==1);
+        [valid writeToFile:archive atomically:YES];done=NO;[retry loadRange:NSMakeRange(0,1) done:^(NSString *error){CHECK(!error&&[[retry cachedItem:0][@"id"]isEqual:records[0][@"id"]]);done=YES;}];CHECK(Wait(^BOOL{return done;}));
+        // A complete gzip with invalid SQLite content is also rejected.
+        NSString *database=nil;for(NSString *name in [fm contentsOfDirectoryAtPath:folder error:nil])if([name hasSuffix:@".sqlite"])database=[folder stringByAppendingPathComponent:name];NSData *dbBytes=[NSData dataWithContentsOfFile:database];CHECK(dbBytes.length>0);[retry park];CHECK(Wait(^BOOL{return [retry.diagnostics[@"residency"][@"parked"]boolValue];}));
+        NSMutableData *invalidDB=[dbBytes mutableCopy];((unsigned char *)invalidDB.mutableBytes)[0]='X';NSString *bad=[folder stringByAppendingPathComponent:@"bad-input"];[invalidDB writeToFile:bad atomically:YES];[fm removeItemAtPath:archive error:nil];CHECK([RWFeedArchive pack:bad to:archive limit:RWFeedDiskBudgetBytes error:nil]);[fm removeItemAtPath:bad error:nil];[retry activate];done=NO;[retry loadRange:NSMakeRange(0,1) done:^(NSString *error){CHECK(error.length&&! [retry cachedItem:0]);done=YES;}];CHECK(Wait(^BOOL{return done;}));CHECK([fm fileExistsAtPath:archive]&&![fm fileExistsAtPath:database]&&retry.count==1);
+        [valid writeToFile:archive atomically:YES];done=NO;[retry loadRange:NSMakeRange(0,1) done:^(NSString *error){CHECK(!error);done=YES;}];CHECK(Wait(^BOOL{return done;}));
+        // Park cancels a pending hot-window publication; close removes its archive.
+        done=NO;[retry loadRange:NSMakeRange(0,1) done:^(NSString *error){CHECK(error.length);done=YES;}];[retry park];CHECK(Wait(^BOOL{return done;}));CHECK(![retry cachedItem:0]);done=NO;[retry close:^{done=YES;}];CHECK(Wait(^BOOL{return done;}));CHECK(![fm contentsOfDirectoryAtPath:folder error:nil].count);
+    }@finally{for(RWFeedStore *feed in feeds){done=NO;[feed close:^{done=YES;}];Wait(^BOOL{return done;});}[fm removeItemAtPath:folder error:nil];}
+    printf("{\"checks\":%d,\"failures\":%d,\"contexts\":12,\"active_bytes\":%llu,\"parked_bytes\":%llu,\"host_park_seconds\":%.6f,\"host_restore_seconds\":%.6f}\n",checks,failures,activeBytes,parkedBytes,parkSeconds,restoreSeconds);return failures?1:0;
+}}

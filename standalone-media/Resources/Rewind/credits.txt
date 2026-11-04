@@ -1,0 +1,5 @@
+Cosmos Laundromat: Copyright 2015 Blender Foundation. Creative Commons. https://studio.blender.org/projects/cosmos-laundromat/
+The app preview is a 20-second excerpt, resized and re-encoded to H.264/AAC. Hero artwork is a resized frame from the film.
+Sintel: Copyright 2010 Blender Foundation. Creative Commons Attribution 3.0. https://durian.blender.org/ https://creativecommons.org/licenses/by/3.0/
+Torrent metadata and posters: https://webtorrent.io/free-torrents
+Movie and series catalog metadata: https://v3-cinemeta.strem.io/manifest.json

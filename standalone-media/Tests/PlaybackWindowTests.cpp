@@ -1,0 +1,53 @@
+#include "../RWPlaybackWindow.h"
+#include "../RWStartupPrefetch.h"
+#include <cstdio>
+int main(){int checks=0,failures=0;auto check=[&](bool ok,const char *m){checks++;if(!ok){failures++;fprintf(stderr,"FAIL: %s\n",m);}};
+    const int M=1024*1024;const int64_t size=4LL*1024*M;RWPlaybackWindow w;
+    w.request(0,2*M,0);auto p=w.plan(0,size,M,0,0);
+    check(p.size()==8&&p.front()==0&&p.back()==7,"Opening downloads only its eight MiB window");
+    w.request(size-65536,65536,.1);p=w.plan(0,size,M,0,.1);
+    check(p.size()==9&&p.front()==4095&&std::find(p.begin(),p.end(),0)!=p.end(),"Closing index and opening can be requested together");
+    w.request(512LL*M,2*M,3);p=w.plan(0,size,M,0,3);
+    check(p.size()==8&&p.front()==512&&p.back()==519,"Seeking expires the earlier opening and index requests");
+    w.clear();for(int i=0;i<4;i++)w.request(i*512LL*M+M-1,4*M,4);
+    p=w.plan(0,size,16*M,10.*M,4);
+    check(p.size()==4,"Whole piece cost caps concurrent read windows at 64 MiB");
+    check(p[0]==96&&p[1]==64&&p[2]==32&&p[3]==0,"Each reader gets a blocked piece before lookahead consumes the budget");
+    w.clear();w.request(0,2*M,0);p=w.plan(40LL*1024*M,100LL*M,8*M,300000,0);
+    check(p.size()==1&&p[0]==5120,"Season-pack offsets remain 64-bit and file relative");
+    w.clear();w.request(100,400,1);p=w.plan(0,4096,M,0,1);
+    check(p.size()==1&&p[0]==0,"Small files never request a following torrent file");
+    check(w.plan(INT64_MAX-100,4096,M,0,1).empty(),"Overflowing ranges are rejected");
+    check(w.plan(0,4096,32*M,0,1).empty(),"Piece memory ceiling remains enforced");
+    check(w.plan(0,4096,M,0,4).empty(),"Idle readers have no wanted transfer");
+    w.clear();w.request(0,2*M,0);for(int i=1;i<100;i++)w.request(i*16384,2*M,.01*i);
+    p=w.plan(0,size,M,0,1);check(p.size()<=9&&p.front()==1,"Small sequential reads replace overlapping requests instead of accumulating work");
+    w.clear();check(w.plan(0,size,M,0,1).empty(),"Cancellation removes all requested pieces");
+    RWStartupPrefetch index;index.begin(0,size,M,0);
+    index.update(3,[](int){return false;});w.request(0,256*1024,3);
+    p=w.plan(0,size,M,0,3,index.pieces());
+    check(index.state()==RWStartupPrefetch::Pending&&p.size()==9&&p[0]==0&&p[1]==4095,"Index survives header setup while current decoder demand remains first");
+    index.update(4,[](int piece){return piece==4095;});
+    check(index.state()==RWStartupPrefetch::Downloaded&&index.pieces().empty(),"Downloaded index releases speculative ownership");
+    index.begin(0,size,M,5);index.cancel();index.update(6,[](int){return false;});
+    check(index.state()==RWStartupPrefetch::Cancelled&&index.pieces().empty(),"Seek cancellation cannot resurrect the startup request");
+    index.begin(0,size,M,10);index.update(24.999,[](int){return false;});
+    check(index.state()==RWStartupPrefetch::Pending,"Header preparation may use its existing deadline");
+    index.update(25,[](int){return false;});
+    check(index.state()==RWStartupPrefetch::Expired&&index.pieces().empty(),"Unproductive index expires at15seconds without extending startup");
+    index.begin(0,size,M,30);index.update(29,[](int){return false;});
+    check(index.state()==RWStartupPrefetch::Expired,"Backwards time never retains a stale request");
+    index.begin(0,size,M,30);index.update(NAN,[](int){return false;});
+    check(index.pieces().empty(),"Invalid time clears speculative work");
+    index.begin(40LL*1024*M,100LL*M,8*M,0);
+    check(index.pieces().size()==1&&index.pieces()[0]==5132,"Index preserves64bit season-pack file offsets");
+    index.begin(0,size+100,16384,0);
+    check(index.pieces().size()==5,"Small valid torrent pieces can cover the complete64KiB index span");
+    index.begin(INT64_MAX-100,4096,M,0);check(index.pieces().empty(),"Overflowing index cannot request neighboring data");
+    index.begin(0,65536,M,0);check(index.pieces().empty(),"A small fully probed file needs no closing prefetch");
+    index.begin(0,size,32*M,0);check(index.pieces().empty(),"Index cannot bypass the16MiB piece limit");
+    index.begin(0,size,16*M,0);w.clear();for(int i=0;i<4;i++)w.request(i*512LL*M,64*1024,1);
+    p=w.plan(0,size,16*M,10.*M,1,index.pieces());
+    check(p.size()==4&&p[0]==96&&p[1]==64&&p[2]==32&&p[3]==0,"Index never displaces blocked readers or expands64MiB budget");
+    printf("{\"checks\":%d,\"failures\":%d}\n",checks,failures);return failures?1:0;
+}
